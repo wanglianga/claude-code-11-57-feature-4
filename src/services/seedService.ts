@@ -4,15 +4,21 @@ import {
   getAllCurves,
   getAllReadings,
   importReadings,
+  putConditionalRelation,
   putCurve,
+  putHydrologicRelation,
   putRainStation,
   putRainZone,
   putReservoir,
+  putRiverSection,
   putRule,
   putSourceFile,
+  putStationHealth,
+  putTributaryCondition,
   getSourceFiles,
 } from '../db';
 import { buildDemoDataset } from '../demo/demoData';
+import { buildRiskDemoDataset } from '../demo/riskDemo';
 import { nowISO } from '../lib/time';
 import type { QualityFlag, RawReading, ReadingKind, SourceFileRecord } from '../types';
 
@@ -22,22 +28,31 @@ export async function isSeeded(): Promise<boolean> {
 
 export async function seedDemoData(): Promise<{ readings: number; curves: number; rules: number }> {
   const data = buildDemoDataset();
+  const risk = buildRiskDemoDataset();
   await clearAllData();
   for (const z of data.zones) await putRainZone(z);
+  for (const z of risk.zones) await putRainZone(z);
   for (const s of data.stations) await putRainStation(s);
   for (const r of data.reservoirs) await putReservoir(r);
   for (const c of data.curves) await putCurve(c);
   for (const rule of data.rules) await putRule(rule);
+  // 断面风险推导主数据
+  for (const s of risk.sections) await putRiverSection(s);
+  for (const h of risk.health) await putStationHealth(h);
+  for (const rel of risk.relations) await putHydrologicRelation(rel);
+  for (const trib of risk.tributaries) await putTributaryCondition(trib);
+  for (const m of risk.conditionalRelations) await putConditionalRelation(m);
+  const allReadings = [...data.readings, ...risk.readings];
   const file: SourceFileRecord = {
     id: 'seed-bundle',
     fileName: '演示数据集（内置播种）',
     kind: 'mixed',
     importedAt: nowISO(),
-    readingCount: data.readings.length,
-    byteSize: new Blob([JSON.stringify(data.readings)]).size,
-    note: '含迟到雨量、跨库调水、曲线切换、断面故障、修订关系、大文件下钻六类场景',
+    readingCount: allReadings.length,
+    byteSize: new Blob([JSON.stringify(allReadings)]).size,
+    note: '含迟到雨量、跨库调水、曲线切换、断面故障、修订关系、大文件下钻，以及断面风险推导（故障/支流/罕见暴雨/恢复实测）场景',
   };
-  const res = await importReadings(data.readings, file);
+  const res = await importReadings(allReadings, file);
   for (const f of data.files) await putSourceFile(f);
   return { readings: res.imported, curves: data.curves.length, rules: data.rules.length };
 }

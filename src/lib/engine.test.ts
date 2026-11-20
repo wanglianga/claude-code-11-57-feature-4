@@ -128,6 +128,11 @@ describe('演示数据端到端平衡运行', () => {
     rules: data.rules,
     reservoirs: data.reservoirs,
     zones: data.zones,
+    riverSections: [],
+    healthRecords: [],
+    hydrologicRelations: [],
+    tributaryConditions: [],
+    conditionalRelations: [],
     frozenAt: '2026-07-15T09:30:00.000Z',
   };
   const ctx: RunContext = {

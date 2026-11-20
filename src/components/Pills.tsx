@@ -1,4 +1,4 @@
-import type { IndicatorStatus, RunStatus } from '../types';
+import type { IndicatorStatus, RangeSource, RiskClass, RunStatus } from '../types';
 
 export function StatusPill({ status }: { status: IndicatorStatus }) {
   const map: Record<IndicatorStatus, { cls: string; text: string }> = {
@@ -40,5 +40,27 @@ export function ApprovalPill({ status }: { status: string }) {
     retired: { cls: 'neutral', text: '已停用' },
   };
   const m = map[status] ?? { cls: 'neutral', text: status };
+  return <span className={`pill ${m.cls}`}>{m.text}</span>;
+}
+
+export function RiskClassPill({ classification }: { classification: RiskClass }) {
+  const map: Record<RiskClass, { cls: string; text: string }> = {
+    safe: { cls: 'ok', text: '已确认安全' },
+    exceeded: { cls: 'danger', text: '已确认超限' },
+    possible: { cls: 'warn', text: '可能超限' },
+    undetermined: { cls: 'pending', text: '不可判定' },
+  };
+  const m = map[classification];
+  return <span className={`pill ${m.cls}`}>{m.text}</span>;
+}
+
+export function RangeSourcePill({ source }: { source: RangeSource }) {
+  const map: Record<RangeSource, { cls: string; text: string }> = {
+    measured: { cls: 'ok', text: '实测' },
+    engineering_propagation: { cls: 'info', text: '工程传播推导' },
+    conditional_fit: { cls: 'info', text: '条件关系推导' },
+    none: { cls: 'neutral', text: '无可用来源' },
+  };
+  const m = map[source];
   return <span className={`pill ${m.cls}`}>{m.text}</span>;
 }

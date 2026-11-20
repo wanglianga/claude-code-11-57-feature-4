@@ -1,11 +1,16 @@
 // 运行编排：固定来源截止点、曲线版本、容差与时间网格，形成不可变快照后交给 Worker
 import type { BalanceRun, RunSnapshot } from '../types';
 import {
+  getAllConditionalRelations,
   getAllCurves,
+  getAllHydrologicRelations,
   getAllRainZones,
   getAllReadings,
   getAllReservoirs,
+  getAllRiverSections,
   getAllRules,
+  getAllStationHealth,
+  getAllTributaryConditions,
   getReadingsForCutoff,
   saveRun,
   saveSnapshot,
@@ -69,11 +74,16 @@ export async function createRun(params: CreateRunParams): Promise<BalanceRun> {
   };
 
   // 锁定快照：截止点之后到达的读数一律不进本运行（迟到雨量在截止点后即被排除）
-  const [allReservoirs, zones, curves, rules] = await Promise.all([
+  const [allReservoirs, zones, curves, rules, riverSections, healthRecords, hydrologicRelations, tributaryConditions, conditionalRelations] = await Promise.all([
     getAllReservoirs(),
     getAllRainZones(),
     getAllCurves(),
     getAllRules(),
+    getAllRiverSections(),
+    getAllStationHealth(),
+    getAllHydrologicRelations(),
+    getAllTributaryConditions(),
+    getAllConditionalRelations(),
   ]);
   const readings = await getReadingsForCutoff(params.cutoffAt);
   const totalReadings = await getAllReadings();
@@ -86,6 +96,11 @@ export async function createRun(params: CreateRunParams): Promise<BalanceRun> {
     rules,
     reservoirs: allReservoirs.filter((r) => params.reservoirIds.includes(r.id)),
     zones,
+    riverSections,
+    healthRecords,
+    hydrologicRelations,
+    tributaryConditions,
+    conditionalRelations,
     frozenAt: nowISO(),
   };
 
@@ -122,6 +137,7 @@ export function startRunWorker(
 export interface OnDemandResult {
   facts: import('../types').BalanceFact[];
   indicators: import('../types').ReservoirIndicator[];
+  riskSegments: import('../types').SectionRiskSegment[];
 }
 
 /**
@@ -134,7 +150,7 @@ export function queryOnDemand(runId: string): Promise<OnDemandResult> {
     worker.onmessage = (ev: MessageEvent<WorkerProgress>) => {
       const p = ev.data;
       if (p.type === 'ondemand_result') {
-        resolve({ facts: p.facts, indicators: p.indicators });
+        resolve({ facts: p.facts, indicators: p.indicators, riskSegments: p.riskSegments });
         worker.terminate();
       } else if (p.type === 'error') {
         reject(new Error(p.message));

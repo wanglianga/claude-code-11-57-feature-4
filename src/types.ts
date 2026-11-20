@@ -149,6 +149,12 @@ export interface RunSnapshot {
   rules: DispatchRule[];
   reservoirs: Reservoir[];
   zones: RainZone[];
+  /** 断面风险推导主数据（断面/健康记录/水文关系/支流/条件模型），随快照冻结 */
+  riverSections: RiverSection[];
+  healthRecords: StationHealthRecord[];
+  hydrologicRelations: HydrologicRelation[];
+  tributaryConditions: TributaryCondition[];
+  conditionalRelations: ConditionalRelation[];
   frozenAt: ISOTime;
 }
 
@@ -249,3 +255,194 @@ export interface SourceFileRecord {
   byteSize: number;
   note?: string;
 }
+
+// ===================================================================
+// 下游断面风险范围推导（传感器故障期间不替代实测，只输出风险时间段）
+// 所有推导结果一律标注为 inferred，绝不产出单一“替代水位/流量”。
+// ===================================================================
+
+/** 承压线判定基准类型：水位 m 或流量 m³/s */
+export type SectionMetricKind = 'water_level' | 'flow';
+
+/** 河道断面（下游承压线载体，区别于水库入库/出库断面） */
+export interface RiverSection {
+  id: ID;
+  name: string;
+  lon: number;
+  lat: number;
+  metric: SectionMetricKind;
+  unit: string;
+  /** 河道承压线：超过即超限 */
+  bearingLimit: number;
+  /** 预警线（低于承压线），用于建议分级，不改变四类判定 */
+  warningLimit: number;
+}
+
+/** 站点校准状态：未校准/校准时段的传播界额外加宽 */
+export type CalibrationStatus = 'calibrated' | 'due' | 'uncalibrated';
+
+/** 站点健康记录：故障区间显式登记，区别于“没有读数” */
+export interface StationHealthRecord {
+  id: ID;
+  sectionId: ID;
+  /** 故障开始（含） */
+  faultStart: ISOTime;
+  /** 故障结束（含）；undefined 表示截至运行截止点仍未恢复 */
+  faultEnd?: ISOTime;
+  reason: string;
+  calibration: CalibrationStatus;
+  /** 该故障区间内仍可用的邻近断面（候选参考站，须另有水文关系支撑才可用） */
+  availableNeighborIds: ID[];
+  /** 恢复实测的首条读数时间；与故障结束重叠的替代关系在复核完成前标记待复核 */
+  recoveredReadingAt?: ISOTime;
+  reviewNote?: string;
+}
+
+/** 支流汇入条件：仅在闸控/活跃区间计入，区间按 [activeFrom, activeTo) 生效 */
+export interface TributaryCondition {
+  id: ID;
+  /** 汇入点位于参考站→目标断面之间 */
+  targetSectionId: ID;
+  name: string;
+  /** 活跃区间起点（含） */
+  activeFrom: ISOTime;
+  /** 活跃区间终点（不含）；undefined 表示长期活跃 */
+  activeTo?: ISOTime;
+  /** 工程估算的支流贡献范围（与目标断面同 unit） */
+  contributionRange: [number, number];
+  /** 无支流测站时为 true，贡献只能给界不能给点估计 */
+  ungaged: boolean;
+  note?: string;
+}
+
+/**
+ * 水文关系（经工程批准）：参考断面 → 目标断面的传播时差与允许衰减/增幅界。
+ * 不依赖长历史，规则可解释；复杂回水条件下 backwaterWiden 显式加宽区间。
+ */
+export interface HydrologicRelation {
+  id: ID;
+  targetSectionId: ID;
+  referenceSectionId: ID;
+  approvalStatus: ApprovalStatus;
+  approvedBy?: string;
+  /** 传播时间窗口（秒）：目标断面 t 时刻的量对应参考站 [t-τmax, t-τmin] */
+  travelTimeMinSeconds: number;
+  travelTimeMaxSeconds: number;
+  /** 允许衰减/增幅系数界（乘法）：target ≈ reference × k，k ∈ [kMin, kMax] */
+  attenuationMin: number;
+  attenuationMax: number;
+  /** 回水附加界（与目标断面同 unit 的加法余量），复杂回水条件下 > 0 */
+  backwaterWiden: number;
+  /** 校准时段附加比例（如 0.1 表示未校准再放宽 10%） */
+  calibrationRelax: number;
+  note?: string;
+}
+
+/** 条件关系适用环境（相近雨势、闸门状态、季节） */
+export interface RelationEnvironment {
+  /** 面雨量强度区间 mm/h */
+  rainIntensityRange: [number, number];
+  /** 闸门状态标签（如 open/closed/regulated），空数组表示不限制 */
+  gateStates: string[];
+  /** 适用月份区间 1~12 */
+  monthRange: [number, number];
+}
+
+/** 条件关系拟合样本：历史同步完好时段的配对观测 */
+export interface RelationSample {
+  at: ISOTime;
+  referenceValue: number;
+  targetValue: number;
+  rainIntensity: number;
+  gateState: string;
+}
+
+/**
+ * 条件关系模型：从历史“双站同步完好”时段拟合 target = slope×ref + intercept，
+ * 残差给出预测带；日常情况下比工程界更紧凑，罕见洪水/结构变化时靠环境包络保护。
+ */
+export interface ConditionalRelation {
+  id: ID;
+  targetSectionId: ID;
+  referenceSectionId: ID;
+  fittedFrom: ISOTime;
+  fittedTo: ISOTime;
+  slope: number;
+  intercept: number;
+  /** 残差预测带半宽（同 unit，按残差分位数估计） */
+  residualBand: number;
+  /** 训练样本环境包络：参考值/雨强/闸门状态/月份，超出即判外推不可用 */
+  envelope: {
+    referenceRange: [number, number];
+    rainRange: [number, number];
+    gateStates: string[];
+    monthRange: [number, number];
+  };
+  sampleCount: number;
+  r2: number;
+  environment: RelationEnvironment;
+  note?: string;
+}
+
+/** 风险分段的四类结论 */
+export type RiskClass =
+  | 'safe' // 已确认安全：推导上界仍低于承压线
+  | 'exceeded' // 已确认超限：推导下界仍高于承压线
+  | 'possible' // 可能超限：区间跨越承压线
+  | 'undetermined'; // 不可判定：无可用参考/模型或外推失配
+
+/** 区间来源 */
+export type RangeSource =
+  | 'measured' // 实测（本断面健康时段）
+  | 'engineering_propagation' // 工程批准传播时差 + 增减界区间传播
+  | 'conditional_fit' // 历史完好时段条件关系预测区间
+  | 'none'; // 无可用来源
+
+/** 单条参考证据（同一参考站支撑多目标时不构成独立证据，由引擎标记） */
+export interface RiskEvidence {
+  referenceSectionId: ID;
+  source: RangeSource;
+  relationId?: ID;
+  /** 参与传播的参考读数 ID */
+  sourceReadingIds: ID[];
+  /** 该参考站同时支撑的目标断面数（>1 即非独立证据） */
+  sharedTargetCount: number;
+  independent: boolean;
+  /** 传播采用的时差窗口（秒） */
+  travelTimeSeconds: [number, number];
+  note?: string;
+}
+
+/** 断面风险时间段（一个网格区间一条；恢复实测后另起新版本，不回写旧版本） */
+export interface SectionRiskSegment {
+  id: ID;
+  runId: ID;
+  sectionId: ID;
+  t1: ISOTime;
+  t2: ISOTime;
+  classification: RiskClass;
+  /** 推导量的可能范围 [下界, 上界]（同断面 unit）；不可判定为 null */
+  inferredRange: [number, number] | null;
+  /** 本断面实测值（健康时段）；故障时段为 null */
+  measuredValue: number | null;
+  bearingLimit: number;
+  warningLimit: number;
+  /** 范围来源；多参考站合并时取主导来源并在 evidence 中留痕 */
+  source: RangeSource;
+  /** 推导标记：true 表示非实测，页面必须明示 */
+  inferred: boolean;
+  evidence: RiskEvidence[];
+  /** 活跃支流贡献的合成范围（同 unit） */
+  tributaryRange: [number, number] | null;
+  /** 故障结束与替代关系重叠、待人工复核 */
+  pendingReview: boolean;
+  reviewReasons: string[];
+  /** 环境包络外推/失配等限制说明 */
+  limitations: string[];
+  /** 风险版本号：同一断面每次恢复实测后递增 */
+  version: number;
+  /** 健康记录 ID（故障时段关联） */
+  healthRecordId?: ID;
+  note?: string;
+}
+

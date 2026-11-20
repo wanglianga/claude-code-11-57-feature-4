@@ -59,7 +59,7 @@ export default function RunsPage() {
     startRunWorker(run.id, (msg: WorkerProgress) => {
       if (msg.type === 'progress') setProgress((p) => ({ ...p, [run.id]: msg.message }));
       if (msg.type === 'done') {
-        setProgress((p) => ({ ...p, [run.id]: `完成：事实 ${msg.factCount} 条，待核指标 ${msg.pendingCount} 个，未闭合区间 ${msg.unclosedCount} 个` }));
+        setProgress((p) => ({ ...p, [run.id]: `完成：事实 ${msg.factCount} 条，待核指标 ${msg.pendingCount} 个，未闭合区间 ${msg.unclosedCount} 个，断面风险分段 ${msg.riskSegmentCount} 条` }));
         bumpData();
       }
       if (msg.type === 'error') setProgress((p) => ({ ...p, [run.id]: `失败：${msg.message}` }));

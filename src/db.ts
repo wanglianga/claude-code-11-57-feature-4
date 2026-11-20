@@ -1,22 +1,29 @@
 // IndexedDB 存储层：原始读数、曲线/规则目录、运行、平衡事实、指标、字段级批注
+// 以及下游断面风险范围推导主数据与风险分段（v2 升级新增）
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import type {
   Annotation,
   BalanceFact,
+  ConditionalRelation,
   CurveVersion,
   DispatchRule,
+  HydrologicRelation,
   RawReading,
   Reservoir,
   ReservoirIndicator,
   BalanceRun,
+  RiverSection,
   RunSnapshot,
+  SectionRiskSegment,
   SourceFileRecord,
+  StationHealthRecord,
+  TributaryCondition,
   RainZone,
   RainStation,
 } from './types';
 
 export const DB_NAME = 'flood-dispatch-db';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 interface FloodDB extends DBSchema {
   raw_readings: {
@@ -47,6 +54,33 @@ interface FloodDB extends DBSchema {
     indexes: { by_subject: [string, string] };
   };
   source_files: { key: string; value: SourceFileRecord };
+  // ---- v2：断面风险范围推导 ----
+  river_sections: { key: string; value: RiverSection };
+  station_health: {
+    key: string;
+    value: StationHealthRecord;
+    indexes: { by_section: string };
+  };
+  hydrologic_relations: {
+    key: string;
+    value: HydrologicRelation;
+    indexes: { by_target: string; by_target_reference: [string, string] };
+  };
+  tributary_conditions: {
+    key: string;
+    value: TributaryCondition;
+    indexes: { by_target: string };
+  };
+  conditional_relations: {
+    key: string;
+    value: ConditionalRelation;
+    indexes: { by_target: string };
+  };
+  risk_segments: {
+    key: string;
+    value: SectionRiskSegment;
+    indexes: { by_run: string; by_run_section: [string, string] };
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<FloodDB>> | null = null;
@@ -54,28 +88,47 @@ let dbPromise: Promise<IDBPDatabase<FloodDB>> | null = null;
 export function getDB(): Promise<IDBPDatabase<FloodDB>> {
   if (!dbPromise) {
     dbPromise = openDB<FloodDB>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
-        const readings = db.createObjectStore('raw_readings', { keyPath: 'id' });
-        readings.createIndex('by_kind', 'kind');
-        readings.createIndex('by_reservoir', 'reservoirId');
-        readings.createIndex('by_sampled', 'sampledAt');
-        db.createObjectStore('reservoirs', { keyPath: 'id' });
-        db.createObjectStore('rain_zones', { keyPath: 'id' });
-        db.createObjectStore('rain_stations', { keyPath: 'id' });
-        const curves = db.createObjectStore('curves', { keyPath: 'id' });
-        curves.createIndex('by_reservoir_kind', ['reservoirId', 'kind']);
-        const rules = db.createObjectStore('rules', { keyPath: 'id' });
-        rules.createIndex('by_reservoir', 'reservoirId');
-        db.createObjectStore('runs', { keyPath: 'id' });
-        db.createObjectStore('snapshots', { keyPath: 'runId' });
-        const facts = db.createObjectStore('facts', { keyPath: 'id' });
-        facts.createIndex('by_run', 'runId');
-        facts.createIndex('by_run_reservoir', ['runId', 'reservoirId']);
-        const indicators = db.createObjectStore('indicators', { keyPath: 'id' });
-        indicators.createIndex('by_run', 'runId');
-        const annotations = db.createObjectStore('annotations', { keyPath: 'id' });
-        annotations.createIndex('by_subject', ['subjectType', 'subjectId']);
-        db.createObjectStore('source_files', { keyPath: 'id' });
+      upgrade(db, oldVersion) {
+        // v1：平衡运行基线库
+        if (oldVersion < 1) {
+          const readings = db.createObjectStore('raw_readings', { keyPath: 'id' });
+          readings.createIndex('by_kind', 'kind');
+          readings.createIndex('by_reservoir', 'reservoirId');
+          readings.createIndex('by_sampled', 'sampledAt');
+          db.createObjectStore('reservoirs', { keyPath: 'id' });
+          db.createObjectStore('rain_zones', { keyPath: 'id' });
+          db.createObjectStore('rain_stations', { keyPath: 'id' });
+          const curves = db.createObjectStore('curves', { keyPath: 'id' });
+          curves.createIndex('by_reservoir_kind', ['reservoirId', 'kind']);
+          const rules = db.createObjectStore('rules', { keyPath: 'id' });
+          rules.createIndex('by_reservoir', 'reservoirId');
+          db.createObjectStore('runs', { keyPath: 'id' });
+          db.createObjectStore('snapshots', { keyPath: 'runId' });
+          const facts = db.createObjectStore('facts', { keyPath: 'id' });
+          facts.createIndex('by_run', 'runId');
+          facts.createIndex('by_run_reservoir', ['runId', 'reservoirId']);
+          const indicators = db.createObjectStore('indicators', { keyPath: 'id' });
+          indicators.createIndex('by_run', 'runId');
+          const annotations = db.createObjectStore('annotations', { keyPath: 'id' });
+          annotations.createIndex('by_subject', ['subjectType', 'subjectId']);
+          db.createObjectStore('source_files', { keyPath: 'id' });
+        }
+        // v2：下游断面风险范围推导主数据与风险分段（老库平滑升级，不影响既有数据）
+        if (oldVersion < 2) {
+          db.createObjectStore('river_sections', { keyPath: 'id' });
+          const health = db.createObjectStore('station_health', { keyPath: 'id' });
+          health.createIndex('by_section', 'sectionId');
+          const rel = db.createObjectStore('hydrologic_relations', { keyPath: 'id' });
+          rel.createIndex('by_target', 'targetSectionId');
+          rel.createIndex('by_target_reference', ['targetSectionId', 'referenceSectionId']);
+          const trib = db.createObjectStore('tributary_conditions', { keyPath: 'id' });
+          trib.createIndex('by_target', 'targetSectionId');
+          const cond = db.createObjectStore('conditional_relations', { keyPath: 'id' });
+          cond.createIndex('by_target', 'targetSectionId');
+          const risk = db.createObjectStore('risk_segments', { keyPath: 'id' });
+          risk.createIndex('by_run', 'runId');
+          risk.createIndex('by_run_section', ['runId', 'sectionId']);
+        }
       },
     });
   }
@@ -161,6 +214,58 @@ export async function putRule(r: DispatchRule): Promise<void> {
 }
 export async function getAllRules(): Promise<DispatchRule[]> {
   return (await getDB()).getAll('rules');
+}
+
+// ---------- 断面风险推导主数据 ----------
+
+export async function putRiverSection(s: RiverSection): Promise<void> {
+  await (await getDB()).put('river_sections', s);
+}
+export async function getAllRiverSections(): Promise<RiverSection[]> {
+  return (await getDB()).getAll('river_sections');
+}
+export async function putStationHealth(h: StationHealthRecord): Promise<void> {
+  await (await getDB()).put('station_health', h);
+}
+export async function getAllStationHealth(): Promise<StationHealthRecord[]> {
+  return (await getDB()).getAll('station_health');
+}
+export async function putHydrologicRelation(h: HydrologicRelation): Promise<void> {
+  await (await getDB()).put('hydrologic_relations', h);
+}
+export async function getAllHydrologicRelations(): Promise<HydrologicRelation[]> {
+  return (await getDB()).getAll('hydrologic_relations');
+}
+export async function putTributaryCondition(c: TributaryCondition): Promise<void> {
+  await (await getDB()).put('tributary_conditions', c);
+}
+export async function getAllTributaryConditions(): Promise<TributaryCondition[]> {
+  return (await getDB()).getAll('tributary_conditions');
+}
+export async function putConditionalRelation(c: ConditionalRelation): Promise<void> {
+  await (await getDB()).put('conditional_relations', c);
+}
+export async function getAllConditionalRelations(): Promise<ConditionalRelation[]> {
+  return (await getDB()).getAll('conditional_relations');
+}
+
+// ---------- 风险分段（随运行物化，按需运行不落库） ----------
+
+export async function replaceRiskSegments(runId: string, segments: SectionRiskSegment[]): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction('risk_segments', 'readwrite');
+  const existing = await tx.store.index('by_run').getAllKeys(runId);
+  for (const key of existing) await tx.store.delete(key);
+  for (const s of segments) await tx.store.put(s);
+  await tx.done;
+}
+
+export async function getRiskSegmentsByRun(runId: string): Promise<SectionRiskSegment[]> {
+  return (await getDB()).getAllFromIndex('risk_segments', 'by_run', runId);
+}
+
+export async function getRiskSegmentsByRunSection(runId: string, sectionId: string): Promise<SectionRiskSegment[]> {
+  return (await getDB()).getAllFromIndex('risk_segments', 'by_run_section', [runId, sectionId]);
 }
 
 // ---------- 运行 / 快照 / 事实 / 指标 ----------
@@ -317,6 +422,8 @@ export async function clearAllData(): Promise<void> {
   const stores = [
     'raw_readings', 'reservoirs', 'rain_zones', 'rain_stations', 'curves', 'rules',
     'runs', 'snapshots', 'facts', 'indicators', 'annotations', 'source_files',
+    'river_sections', 'station_health', 'hydrologic_relations',
+    'tributary_conditions', 'conditional_relations', 'risk_segments',
   ] as const;
   const tx = db.transaction([...stores], 'readwrite');
   await Promise.all(stores.map((s) => tx.objectStore(s).clear()));

@@ -3,13 +3,14 @@ import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   clearAllData, getFactsByRun, getIndicatorsByRun, getReadingsForCutoff,
-  getSnapshot, saveAnnotationFields,
+  getRiskSegmentsByRun, getSnapshot, saveAnnotationFields,
 } from '../db';
 import { seedDemoData } from '../services/seedService';
 import { createRun } from '../services/runService';
 import { executeRun, type RunContext } from './balance';
 import { computeAllIndicators } from './indicators';
-import { replaceFacts, replaceIndicators, saveRun } from '../db';
+import { computeRiskSegments, summarizeRisk, type RiskEngineContext } from './riskRange';
+import { replaceFacts, replaceIndicators, replaceRiskSegments, saveRun } from '../db';
 import { DEMO_CUTOFF_RUN1, DEMO_CUTOFF_RUN2 } from '../demo/demoData';
 import type { BalanceRun } from '../types';
 
@@ -30,10 +31,21 @@ async function executeLikeWorker(run: BalanceRun) {
     pressureWindowSeconds: run.pressureWindowSeconds,
     decisionHorizonSeconds: run.decisionHorizonSeconds,
   });
-  await replaceFacts(run.id, facts);
-  await replaceIndicators(run.id, indicators);
+  const riskSegments = computeRiskSegments({
+    snapshot,
+    runId: run.id,
+    gridStart: run.gridStart,
+    gridEnd: run.gridEnd,
+    gridStepSeconds: run.gridStepSeconds,
+  } as RiskEngineContext);
+  // 与 balance.worker 一致：仅物化设计落库，按需设计不预落风险分段
+  if (run.design === 'materialized') {
+    await replaceFacts(run.id, facts);
+    await replaceIndicators(run.id, indicators);
+    await replaceRiskSegments(run.id, riskSegments);
+  }
   await saveRun({ ...run, status: 'completed', stats: { factCount: facts.length, pendingCount: indicators.filter((i) => i.pending).length, unclosedCount: facts.filter((f) => f.unclosedReasons.length > 0).length }, warnings: [] });
-  return { facts, indicators };
+  return { facts, indicators, riskSegments };
 }
 
 afterEach(async () => {
@@ -164,5 +176,34 @@ describe('端到端：六类验收场景', () => {
     expect(c.annotation.fields['处置理由'].value).toBe('提前预泄');
     expect(c.annotation.fields['风险结论'].value).toBe('待核');
     expect(c.annotation.revision).toBe(3);
+  });
+
+  it('断面风险端到端：快照冻结风险主数据，物化分段落库且四类分类齐全', async () => {
+    await seedDemoData();
+    const run = await createRun({
+      name: '风险推导', cutoffAt: DEMO_CUTOFF_RUN2,
+      gridStart: '2026-07-15T00:00:00.000Z', gridEnd: '2026-07-15T06:00:00.000Z',
+      gridStepSeconds: 3600, tolerance: { absM3: 20_000, relFraction: 0.02 },
+      pressureWindowSeconds: 3 * 3600, decisionHorizonSeconds: 3600,
+      reservoirIds: ['qx'], design: 'materialized',
+    });
+    const snap = (await getSnapshot(run.id))!;
+    // 风险主数据随快照冻结
+    expect(snap.riverSections.length).toBe(4);
+    expect(snap.healthRecords.length).toBe(3);
+    expect(snap.hydrologicRelations.length).toBe(4);
+    expect(snap.conditionalRelations.length).toBe(2);
+
+    const { riskSegments } = await executeLikeWorker(run);
+    const summary = summarizeRisk(riskSegments);
+    expect(summary.safe + summary.exceeded + summary.possible + summary.undetermined).toBe(riskSegments.length);
+    expect(summary.exceeded).toBeGreaterThan(0);
+    expect(summary.possible).toBeGreaterThan(0);
+    expect(summary.undetermined).toBeGreaterThan(0);
+    // 物化落库路径：风险分段可被风险页直接读取
+    const stored = await getRiskSegmentsByRun(run.id);
+    expect(stored.length).toBe(riskSegments.length);
+    // 所有推导分段强制非实测标记，且不存在单点替代值
+    expect(stored.filter((s) => s.inferred).every((s) => s.inferredRange !== null && s.measuredValue === null)).toBe(true);
   });
 });

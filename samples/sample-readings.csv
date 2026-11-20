@@ -5,3 +5,9 @@ water_level,qx,,2026-07-15T02:00:00.000Z,,,107.42,m,suspect,,,0.05,人工校测�
 diversion_in,qx,,2026-07-15T01:00:00.000Z,,,20,m3/s,confirmed,,,,跨库调入
 diversion_out,bs,,2026-07-15T01:00:00.000Z,,,10,m3/s,confirmed,,,,跨库调出
 evaporation,xl,,2026-07-15T01:00:00.000Z,2026-07-15T00:00:00.000Z,,0.1,mm,confirmed,,,0.1,蒸发区间累计
+inflow,,sec-a,2026-07-15T03:00:00.000Z,,,155,m3/s,confirmed,,,2,风险推导参考断面（全程完好）
+inflow,,sec-a,2026-07-15T04:00:00.000Z,,,195,m3/s,confirmed,,,2,风险推导参考断面（全程完好）
+inflow,,sec-b,2026-07-15T04:00:00.000Z,,,MISSING,m3/s,missing,,,,承压断面传感器故障，仅推导风险范围不替代实测
+water_level,,sec-d,2026-07-15T04:00:00.000Z,,,MISSING,m,missing,,,,回水断面水位计雷击损毁，关系仅草稿判不可判定
+rainfall,,z3,2026-07-15T05:00:00.000Z,2026-07-15T04:00:00.000Z,,9,mm,confirmed,,0.5,罕见暴雨：超出sec-c条件关系训练包络
+gate_opening,,sec-b,2026-07-15T04:00:00.000Z,,,3,m,confirmed,,,0.1,故障时段加大泄洪（open工况）
